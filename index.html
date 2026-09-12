@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OneSecai Inventory</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-bars" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+        <div class="brand-text">
+          <strong>OneSecai</strong>
+          <small>Inventory Control</small>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item" data-view="dashboard">Dashboard</button>
+        <div class="nav-group-label">Inventory</div>
+        <button class="nav-item" data-view="items">Items</button>
+        <button class="nav-item" data-view="models">Models</button>
+        <button class="nav-item" data-view="scan">Scan / Lookup</button>
+        <div class="nav-group-label">Operations</div>
+        <button class="nav-item" data-view="movements">Movements</button>
+        <button class="nav-item" data-view="receive">Receive Stock</button>
+        <button class="nav-item" data-view="deliveries">Deliveries</button>
+        <button class="nav-item" data-view="installations">Installations</button>
+        <div class="nav-group-label">Master Data</div>
+        <button class="nav-item" data-view="clients">Clients</button>
+        <button class="nav-item" data-view="suppliers">Suppliers</button>
+        <div class="nav-group-label">Insight</div>
+        <button class="nav-item" data-view="reports">Reports</button>
+        <div class="nav-group-label">Admin</div>
+        <button class="nav-item" data-view="users">Users</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+        <button class="nav-item" data-view="audit">Audit Log</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="who">
+          <span id="who-name">—</span>
+          <small id="who-role">—</small>
+        </div>
+        <button id="logout-btn" class="link-btn">Sign out</button>
+      </div>
+    </aside>
+
+    <div class="mobile-topbar">
+      <button id="menu-toggle" aria-label="Open menu">☰</button>
+      <span>OneSecai Inventory</span>
+    </div>
+
+    <main class="content" id="content">
+      <div class="loading-banner" id="loading-banner" hidden>Working…</div>
+      <div id="view-root"></div>
+    </main>
+  </div>
+
+  <div class="modal-overlay" id="modal-overlay" hidden>
+    <div class="modal" id="modal">
+      <div class="modal-head">
+        <h2 id="modal-title">Title</h2>
+        <button class="modal-close" id="modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

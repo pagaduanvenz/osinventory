@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>OneSecai Inventory — Sign in</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body class="login-body">
+  <div class="login-shell">
+    <div class="login-mark">
+      <div class="login-mark-bars" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <div class="login-mark-text">
+        <span class="login-mark-title">OneSecai</span>
+        <span class="login-mark-sub">Inventory Control</span>
+      </div>
+    </div>
+
+    <form id="login-form" class="login-card" autocomplete="off">
+      <h1>Sign in</h1>
+      <p class="login-hint">Track every unit, from warehouse to install.</p>
+
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" required autofocus />
+
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required />
+
+      <label for="api-url" class="config-label">API URL <span>(one-time setup)</span></label>
+      <input id="api-url" name="api-url" type="text" placeholder="Google Apps Script web app URL" />
+
+      <button type="submit" id="login-btn">Sign in</button>
+      <p id="login-error" class="login-error" hidden></p>
+    </form>
+
+    <p class="login-footnote">Default admin: <code>admin</code> / <code>admin123</code> — change this after first sign-in.</p>
+  </div>
+
+  <script src="login.js"></script>
+</body>
+</html>

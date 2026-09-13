@@ -18,34 +18,62 @@ var sidebar = document.getElementById('sidebar');
 menuToggle.addEventListener('click', function () { sidebar.classList.toggle('open'); });
 document.getElementById('content').addEventListener('click', function () { sidebar.classList.remove('open'); });
 
-// ---------------- API layer ----------------
+// ---------------- API layer (with short-lived cache + progress indicator) ----------------
+var CACHE_TTL = 45000; // ms — long enough to skip refetches when flipping between views, short enough to stay fresh
+var _cache = {};
+function cacheGet(entity) {
+  var c = _cache[entity];
+  return (c && (Date.now() - c.ts < CACHE_TTL)) ? c.data : null;
+}
+function cacheSet(entity, data) { _cache[entity] = { data: data, ts: Date.now() }; return data; }
+function cacheInvalidate(entities) {
+  (Array.isArray(entities) ? entities : [entities]).forEach(function (e) { delete _cache[e]; });
+}
+
+var pendingRequests = 0;
+var progressBar = document.getElementById('top-progress');
+function beginRequest() { pendingRequests++; if (progressBar) progressBar.hidden = false; }
+function endRequest() { pendingRequests = Math.max(0, pendingRequests - 1); if (progressBar && pendingRequests === 0) progressBar.hidden = true; }
+
 var api = {
   _get: function (params) {
     var qs = Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
-    return fetch(API_URL + '?' + qs).then(function (r) { return r.json(); }).then(unwrap);
+    beginRequest();
+    return fetch(API_URL + '?' + qs).then(function (r) { return r.json(); }).then(unwrap).finally(endRequest);
   },
   _post: function (body) {
-    return fetch(API_URL, { method: 'POST', body: JSON.stringify(body) }).then(function (r) { return r.json(); }).then(unwrap);
+    beginRequest();
+    return fetch(API_URL, { method: 'POST', body: JSON.stringify(body) }).then(function (r) { return r.json(); }).then(unwrap).finally(endRequest);
   },
-  list: function (entity) { return api._get({ action: 'list', entity: entity }); },
+  list: function (entity, opts) {
+    opts = opts || {};
+    if (!opts.force) { var cached = cacheGet(entity); if (cached) return Promise.resolve(cached); }
+    return api._get({ action: 'list', entity: entity }).then(function (data) { return cacheSet(entity, data); });
+  },
+  bootstrap: function () { return api._get({ action: 'bootstrap' }); },
   dashboard: function () { return api._get({ action: 'dashboard' }); },
   serialHistory: function (serial) { return api._get({ action: 'serialHistory', serial: serial }); },
   itemLookup: function (value) { return api._get({ action: 'itemLookup', value: value }); },
   modelLookup: function (value) { return api._get({ action: 'modelLookup', value: value }); },
-  create: function (entity, record) { return api._post({ action: 'create', entity: entity, record: record }); },
-  update: function (entity, id, record) { return api._post({ action: 'update', entity: entity, id: id, record: record }); },
-  remove: function (entity, id) { return api._post({ action: 'delete', entity: entity, id: id }); },
-  receiveStock: function (payload) { return api._post({ action: 'receiveStock', payload: payload }); },
-  moveItem: function (payload) { return api._post({ action: 'moveItem', payload: payload }); },
-  createDelivery: function (payload) { return api._post({ action: 'createDelivery', payload: payload }); },
-  createInstallation: function (payload) { return api._post({ action: 'createInstallation', payload: payload }); },
-  bulkReceiveStock: function (payload) { return api._post({ action: 'bulkReceiveStock', payload: payload }); },
-  bulkMoveItems: function (payload) { return api._post({ action: 'bulkMoveItems', payload: payload }); }
+  create: function (entity, record) { return api._post({ action: 'create', entity: entity, record: record }).then(function (r) { cacheInvalidate(entity); return r; }); },
+  update: function (entity, id, record) { return api._post({ action: 'update', entity: entity, id: id, record: record }).then(function (r) { cacheInvalidate(entity); return r; }); },
+  remove: function (entity, id) { return api._post({ action: 'delete', entity: entity, id: id }).then(function (r) { cacheInvalidate(entity); return r; }); },
+  receiveStock: function (payload) { return api._post({ action: 'receiveStock', payload: payload }).then(function (r) { cacheInvalidate(['Items', 'StockMovements']); return r; }); },
+  moveItem: function (payload) { return api._post({ action: 'moveItem', payload: payload }).then(function (r) { cacheInvalidate(['Items', 'StockMovements']); return r; }); },
+  createDelivery: function (payload) { return api._post({ action: 'createDelivery', payload: payload }).then(function (r) { cacheInvalidate(['Items', 'StockMovements', 'Deliveries', 'DeliveryItems']); return r; }); },
+  createInstallation: function (payload) { return api._post({ action: 'createInstallation', payload: payload }).then(function (r) { cacheInvalidate(['Items', 'StockMovements', 'Installations', 'InstallationItems']); return r; }); },
+  bulkReceiveStock: function (payload) { return api._post({ action: 'bulkReceiveStock', payload: payload }).then(function (r) { cacheInvalidate(['Items', 'StockMovements']); return r; }); },
+  bulkMoveItems: function (payload) { return api._post({ action: 'bulkMoveItems', payload: payload }).then(function (r) { cacheInvalidate(['Items', 'StockMovements']); return r; }); }
 };
 function unwrap(res) {
   if (!res.ok) { throw new Error(res.error || 'Request failed'); }
   return res.data;
 }
+
+// Warm the cache once at startup so the first few view switches don't wait on the network at all.
+api.bootstrap().then(function (data) {
+  Object.keys(data).forEach(function (k) { cacheSet(k, data[k]); });
+}).catch(function () { /* views fall back to fetching individually */ });
 
 function withLoading(promise) {
   var banner = document.getElementById('loading-banner');
@@ -184,12 +212,28 @@ function statusBadge(status) {
   return '<span class="badge ' + cls + '">' + status + '</span>';
 }
 
+/** Shows animated placeholder rows in a container while its real data is still loading. */
+function renderSkeleton(container, rows) {
+  rows = rows || 5;
+  var widths = ['92%', '78%', '85%', '65%', '90%'];
+  var html = '<div class="skeleton-table">';
+  for (var i = 0; i < rows; i++) html += '<div class="skeleton-row" style="width:' + widths[i % widths.length] + '"></div>';
+  html += '</div>';
+  container.innerHTML = html;
+}
+
 // ---------------- View router ----------------
 var root = document.getElementById('view-root');
 var navButtons = document.querySelectorAll('.nav-item');
 navButtons.forEach(function (btn) {
   btn.addEventListener('click', function () { navigate(btn.dataset.view); });
 });
+
+var bottomTabs = document.querySelectorAll('.bottom-tab[data-view]');
+bottomTabs.forEach(function (btn) {
+  btn.addEventListener('click', function () { navigate(btn.dataset.view); });
+});
+document.getElementById('bottom-tab-menu').addEventListener('click', function () { sidebar.classList.toggle('open'); });
 
 var VIEWS = {
   dashboard: viewDashboard,
@@ -212,6 +256,8 @@ var VIEWS = {
 
 function navigate(view) {
   navButtons.forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
+  bottomTabs.forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
+  sidebar.classList.remove('open');
   root.innerHTML = '';
   window.scanner && window.scanner.stop && window.scanner.stop().catch(function () {});
   (VIEWS[view] || viewDashboard)();
@@ -278,6 +324,7 @@ function viewItems() {
     '<select id="f-status"><option value="">All statuses</option>' + STATUS_OPTIONS.map(function (s) { return '<option>' + s + '</option>'; }).join('') + '</select>';
   root.appendChild(filterBar);
   var tableHost = document.createElement('div'); root.appendChild(tableHost);
+  renderSkeleton(tableHost);
 
   var allItems = [], allModels = [];
   withLoading(Promise.all([api.list('Items'), api.list('Models')])).then(function (res) {
@@ -366,6 +413,7 @@ function viewItems() {
 function viewModels() {
   head('Models', 'Product types — each with one shared barcode.', 'Add model', function () { openForm(); });
   var tableHost = document.createElement('div'); root.appendChild(tableHost);
+  renderSkeleton(tableHost);
   var rows = [];
   withLoading(api.list('Models')).then(function (r) { rows = r; draw(); }).catch(function (e) { toast(e.message, true); });
 
@@ -483,6 +531,7 @@ function viewMovements() {
   filterBar.innerHTML = '<input type="text" id="f-serial" placeholder="Filter by serial number">';
   root.appendChild(filterBar);
   var tableHost = document.createElement('div'); root.appendChild(tableHost);
+  renderSkeleton(tableHost);
   var rows = [];
   withLoading(api.list('StockMovements')).then(function (r) {
     rows = r.sort(function (a, b) { return new Date(b.DateTime) - new Date(a.DateTime); });
@@ -700,6 +749,7 @@ function viewBulk() {
 function viewDeliveries() {
   head('Deliveries', 'Send items out for delivery or installation at a client site.', 'New delivery', openForm);
   var tableHost = document.createElement('div'); root.appendChild(tableHost);
+  renderSkeleton(tableHost);
   var deliveries = [], clients = [];
   refresh();
 
@@ -779,6 +829,7 @@ function viewDeliveries() {
 function viewInstallations() {
   head('Installations', 'Confirm items installed at the client site.', 'New installation', openForm);
   var tableHost = document.createElement('div'); root.appendChild(tableHost);
+  renderSkeleton(tableHost);
   var installations = [], clients = [];
   refresh();
 
@@ -879,6 +930,7 @@ function supplierFields() {
 function viewMasterData(entity, idField, fields) {
   head(entity, entity === 'Clients' ? 'Everyone you deliver to and install for.' : 'Everyone you receive stock from.', 'Add ' + entity.slice(0, -1).toLowerCase(), function () { openForm(); });
   var tableHost = document.createElement('div'); root.appendChild(tableHost);
+  renderSkeleton(tableHost);
   var rows = [];
   withLoading(api.list(entity)).then(function (r) { rows = r; draw(); }).catch(function (e) { toast(e.message, true); });
 
@@ -1058,6 +1110,7 @@ function viewReports() {
 function viewUsers() {
   head('Users', 'Administrator, Inventory Staff, and Technician roles.', 'Add user', function () { openForm(); });
   var tableHost = document.createElement('div'); root.appendChild(tableHost);
+  renderSkeleton(tableHost);
   var rows = [];
   withLoading(api.list('Users')).then(function (r) { rows = r; draw(); }).catch(function (e) { toast(e.message, true); });
 
@@ -1140,6 +1193,7 @@ function viewSettings() {
 function viewAudit() {
   head('Audit Log', 'Every create, update, delete, and sign-in, timestamped.');
   var tableHost = document.createElement('div'); root.appendChild(tableHost);
+  renderSkeleton(tableHost);
   withLoading(api.list('AuditLogs')).then(function (rows) {
     rows.sort(function (a, b) { return new Date(b.DateTime) - new Date(a.DateTime); });
     renderTable(tableHost, [

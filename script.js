@@ -31,13 +31,16 @@ var api = {
   dashboard: function () { return api._get({ action: 'dashboard' }); },
   serialHistory: function (serial) { return api._get({ action: 'serialHistory', serial: serial }); },
   itemLookup: function (value) { return api._get({ action: 'itemLookup', value: value }); },
+  modelLookup: function (value) { return api._get({ action: 'modelLookup', value: value }); },
   create: function (entity, record) { return api._post({ action: 'create', entity: entity, record: record }); },
   update: function (entity, id, record) { return api._post({ action: 'update', entity: entity, id: id, record: record }); },
   remove: function (entity, id) { return api._post({ action: 'delete', entity: entity, id: id }); },
   receiveStock: function (payload) { return api._post({ action: 'receiveStock', payload: payload }); },
   moveItem: function (payload) { return api._post({ action: 'moveItem', payload: payload }); },
   createDelivery: function (payload) { return api._post({ action: 'createDelivery', payload: payload }); },
-  createInstallation: function (payload) { return api._post({ action: 'createInstallation', payload: payload }); }
+  createInstallation: function (payload) { return api._post({ action: 'createInstallation', payload: payload }); },
+  bulkReceiveStock: function (payload) { return api._post({ action: 'bulkReceiveStock', payload: payload }); },
+  bulkMoveItems: function (payload) { return api._post({ action: 'bulkMoveItems', payload: payload }); }
 };
 function unwrap(res) {
   if (!res.ok) { throw new Error(res.error || 'Request failed'); }
@@ -195,6 +198,7 @@ var VIEWS = {
   scan: viewScan,
   movements: viewMovements,
   receive: viewReceive,
+  bulk: viewBulk,
   deliveries: viewDeliveries,
   installations: viewInstallations,
   clients: viewMasterData.bind(null, 'Clients', 'ClientID', clientFields()),
@@ -530,6 +534,167 @@ function viewReceive() {
   }).catch(function (e) { toast(e.message, true); });
 }
 
+// ---------------- Bulk Update (scan → add or update → batch submit) ----------------
+function viewBulk() {
+  head('Bulk Update', 'Scan each item, choose add or update, then submit the whole batch at once.');
+
+  var scanPanel = document.createElement('div'); scanPanel.className = 'panel';
+  scanPanel.innerHTML =
+    '<h2>Scan or type a code</h2>' +
+    '<div class="field"><input type="text" id="bulk-scan" placeholder="Scan a serial number or barcode, or type it and press Enter" autofocus></div>' +
+    '<button class="btn btn-secondary btn-sm" id="bulk-camera">Start camera scan</button>' +
+    '<div id="bulk-qr-reader" style="margin-top:12px;max-width:320px;"></div>' +
+    '<div id="bulk-resolver" style="margin-top:14px;"></div>';
+  root.appendChild(scanPanel);
+
+  var queuesWrap = document.createElement('div');
+  queuesWrap.style.display = 'grid'; queuesWrap.style.gridTemplateColumns = '1fr 1fr'; queuesWrap.style.gap = '20px';
+  var receivePanel = document.createElement('div'); receivePanel.className = 'panel';
+  receivePanel.innerHTML = '<h2>Pending stock to receive</h2><div id="bulk-receive-table"></div>';
+  var movePanel = document.createElement('div'); movePanel.className = 'panel';
+  movePanel.innerHTML = '<h2>Pending item updates</h2><div id="bulk-move-table"></div>';
+  queuesWrap.appendChild(receivePanel); queuesWrap.appendChild(movePanel);
+  root.appendChild(queuesWrap);
+
+  var submitWrap = document.createElement('div'); submitWrap.className = 'form-actions'; submitWrap.style.justifyContent = 'flex-start';
+  submitWrap.innerHTML = '<button class="btn btn-primary" id="bulk-submit">Submit batch</button>';
+  root.appendChild(submitWrap);
+
+  var models = [], allItems = [];
+  var receiveQueue = [], moveQueue = [];
+  var scanInput = scanPanel.querySelector('#bulk-scan');
+  var resolver = scanPanel.querySelector('#bulk-resolver');
+
+  withLoading(Promise.all([api.list('Models'), api.list('Items')])).then(function (res) {
+    models = res[0]; allItems = res[1];
+  }).catch(function (e) { toast(e.message, true); });
+
+  scanInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && scanInput.value.trim()) { resolve(scanInput.value.trim()); scanInput.value = ''; }
+  });
+
+  var html5Qr = null;
+  scanPanel.querySelector('#bulk-camera').addEventListener('click', function () {
+    var button = scanPanel.querySelector('#bulk-camera');
+    if (html5Qr) { html5Qr.stop().then(function () { html5Qr = null; button.textContent = 'Start camera scan'; }); return; }
+    html5Qr = new Html5Qrcode('bulk-qr-reader');
+    window.scanner = html5Qr;
+    button.textContent = 'Stop camera scan';
+    html5Qr.start({ facingMode: 'environment' }, { fps: 10, qrbox: 200 }, function (text) { resolve(text); }).catch(function () { toast('Could not start camera. Check permissions.', true); });
+  });
+
+  function resolve(code) {
+    var directItem = allItems.find(function (it) { return it.SerialNumber === code || it.ItemID === code; });
+    if (directItem) { showUpdateChoice(directItem); return; }
+    var model = models.find(function (m) { return m.Barcode === code || m.ModelID === code; });
+    if (model) { showModelChoice(model, code); return; }
+    resolver.innerHTML = '<div class="empty-state"><strong>No match</strong>"' + code + '" isn\'t linked to any model or item yet. Add the model under <em>Models</em> first, or pick one manually below.</div>' +
+      '<div class="field-row" style="margin-top:10px;"><select id="bulk-manual-model">' + models.map(function (m) { return '<option value="' + m.ModelID + '">' + m.ModelName + '</option>'; }).join('') + '</select>' +
+      '<button class="btn btn-secondary btn-sm" id="bulk-manual-add">Use this model</button></div>';
+    var sel = resolver.querySelector('#bulk-manual-model');
+    resolver.querySelector('#bulk-manual-add').addEventListener('click', function () {
+      var m = models.find(function (x) { return x.ModelID === sel.value; });
+      if (m) showModelChoice(m, code);
+    });
+  }
+
+  function showModelChoice(model, code) {
+    resolver.innerHTML =
+      '<p><strong class="mono">' + code + '</strong> matches model <strong>' + model.ModelName + '</strong>. What do you want to do?</p>' +
+      '<div class="row-actions" style="margin-bottom:12px;">' +
+      '<button class="btn btn-primary btn-sm" id="choice-add">Add new stock</button>' +
+      '<button class="btn btn-secondary btn-sm" id="choice-update">Update an existing item</button>' +
+      '</div><div id="choice-body"></div>';
+    resolver.querySelector('#choice-add').addEventListener('click', function () { renderAddForm(model); });
+    resolver.querySelector('#choice-update').addEventListener('click', function () { renderModelItemPicker(model); });
+  }
+
+  function renderAddForm(model) {
+    var body = resolver.querySelector('#choice-body');
+    var f = buildForm([
+      { name: 'Quantity', label: 'Quantity', type: 'number', required: true },
+      { name: 'SerialPrefix', label: 'Serial prefix (optional)' },
+      { name: 'Location', label: 'Location', required: true }
+    ], { Quantity: 1, Location: 'Main Warehouse' });
+    var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn btn-primary btn-sm'; btn.textContent = 'Queue this stock line';
+    f.form.appendChild(btn);
+    btn.addEventListener('click', function () {
+      var v = f.getValues();
+      receiveQueue.push({ ModelID: model.ModelID, ModelName: model.ModelName, Quantity: v.Quantity, SerialPrefix: v.SerialPrefix, Location: v.Location });
+      drawReceiveQueue();
+      resolver.innerHTML = ''; scanInput.focus();
+    });
+    body.innerHTML = ''; body.appendChild(f.form);
+  }
+
+  function renderModelItemPicker(model) {
+    var body = resolver.querySelector('#choice-body');
+    var candidates = allItems.filter(function (it) { return it.ModelID === model.ModelID; });
+    if (!candidates.length) { body.innerHTML = '<p style="color:var(--ink-muted);font-size:13px;">No existing items recorded for this model yet.</p>'; return; }
+    var select = document.createElement('select');
+    candidates.forEach(function (it) { var o = document.createElement('option'); o.value = it.ItemID; o.textContent = it.SerialNumber + ' — ' + it.Status; select.appendChild(o); });
+    body.innerHTML = '';
+    body.appendChild(select);
+    var goBtn = document.createElement('button'); goBtn.className = 'btn btn-secondary btn-sm'; goBtn.style.marginLeft = '8px'; goBtn.textContent = 'Choose';
+    body.appendChild(goBtn);
+    goBtn.addEventListener('click', function () {
+      var item = candidates.find(function (it) { return it.ItemID === select.value; });
+      showUpdateChoice(item);
+    });
+  }
+
+  function showUpdateChoice(item) {
+    resolver.innerHTML = '<p>Update <strong class="mono">' + item.SerialNumber + '</strong> — currently ' + statusBadge(item.Status) + ' · ' + item.Condition + '</p><div id="choice-body"></div>';
+    var body = resolver.querySelector('#choice-body');
+    var f = buildForm([
+      { name: 'NewStatus', label: 'New status', type: 'select', options: STATUS_OPTIONS.map(function (s) { return { value: s, label: s }; }) },
+      { name: 'NewCondition', label: 'New condition', type: 'select', options: CONDITION_OPTIONS.map(function (c) { return { value: c, label: c }; }) },
+      { name: 'ToLocation', label: 'Location' },
+      { name: 'Remarks', label: 'Remarks', type: 'textarea' }
+    ], { NewStatus: item.Status, NewCondition: item.Condition, ToLocation: item.Location });
+    var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn btn-primary btn-sm'; btn.textContent = 'Queue this update';
+    f.form.appendChild(btn);
+    btn.addEventListener('click', function () {
+      var v = f.getValues();
+      moveQueue.push({ ItemID: item.ItemID, SerialNumber: item.SerialNumber, NewStatus: v.NewStatus, NewCondition: v.NewCondition, ToLocation: v.ToLocation, Remarks: v.Remarks });
+      drawMoveQueue();
+      resolver.innerHTML = ''; scanInput.focus();
+    });
+    body.appendChild(f.form);
+  }
+
+  function drawReceiveQueue() {
+    renderTable(document.getElementById('bulk-receive-table'), [
+      { key: 'ModelName', label: 'Model' },
+      { key: 'Quantity', label: 'Qty' },
+      { key: 'Location', label: 'Location' }
+    ], receiveQueue, {
+      actions: [{ label: 'Remove', cls: 'btn-danger', onClick: function (row) { receiveQueue.splice(receiveQueue.indexOf(row), 1); drawReceiveQueue(); } }]
+    });
+  }
+  function drawMoveQueue() {
+    renderTable(document.getElementById('bulk-move-table'), [
+      { key: 'SerialNumber', label: 'Serial', mono: true },
+      { key: 'NewStatus', label: 'New status', render: function (r) { return statusBadge(r.NewStatus); } },
+      { key: 'ToLocation', label: 'Location' }
+    ], moveQueue, {
+      actions: [{ label: 'Remove', cls: 'btn-danger', onClick: function (row) { moveQueue.splice(moveQueue.indexOf(row), 1); drawMoveQueue(); } }]
+    });
+  }
+  drawReceiveQueue(); drawMoveQueue();
+
+  document.getElementById('bulk-submit').addEventListener('click', function () {
+    if (!receiveQueue.length && !moveQueue.length) { toast('Nothing queued yet', true); return; }
+    var jobs = [];
+    if (receiveQueue.length) jobs.push(api.bulkReceiveStock({ User: USER.Username, Lines: receiveQueue }));
+    if (moveQueue.length) jobs.push(api.bulkMoveItems({ User: USER.Username, Updates: moveQueue }));
+    withLoading(Promise.all(jobs)).then(function () {
+      toast('Batch processed: ' + receiveQueue.length + ' stock line(s), ' + moveQueue.length + ' update(s)');
+      navigate('bulk');
+    }).catch(function (e) { toast(e.message, true); });
+  });
+}
+
 // ---------------- Deliveries ----------------
 function viewDeliveries() {
   head('Deliveries', 'Send items out for delivery or installation at a client site.', 'New delivery', openForm);
@@ -567,15 +732,30 @@ function viewDeliveries() {
       wrap.appendChild(f.form.firstChild ? null : null);
       while (f.form.firstChild) wrap.appendChild(f.form.firstChild);
 
+      var scanField = document.createElement('div'); scanField.className = 'field';
+      scanField.innerHTML = '<label>Scan to select</label><input type="text" placeholder="Scan a serial number to check it off">';
+      wrap.appendChild(scanField);
+
       var pickerLabel = document.createElement('label'); pickerLabel.textContent = 'Items to deliver'; pickerLabel.style.cssText = 'font-size:12.5px;font-weight:600;color:var(--ink-muted);display:block;margin:4px 0 6px;';
       var picker = document.createElement('div'); picker.className = 'item-picker';
       if (!available.length) picker.innerHTML = '<p style="color:var(--ink-muted);font-size:13px;">No available items in stock.</p>';
+      var checkboxBySerial = {};
       available.forEach(function (it) {
         var lbl = document.createElement('label');
         lbl.innerHTML = '<input type="checkbox" value="' + it.ItemID + '"> <span class="mono">' + it.SerialNumber + '</span> — ' + it.Status;
         picker.appendChild(lbl);
+        checkboxBySerial[it.SerialNumber] = lbl.querySelector('input');
       });
       wrap.appendChild(pickerLabel); wrap.appendChild(picker);
+
+      var scanInput = scanField.querySelector('input');
+      scanInput.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' || !scanInput.value.trim()) return;
+        var code = scanInput.value.trim();
+        var cb = checkboxBySerial[code] || (available.find(function (it) { return it.Barcode === code; }) && checkboxBySerial[(available.find(function (it) { return it.Barcode === code; })).SerialNumber]);
+        if (cb) { cb.checked = true; toast('Checked off ' + code); } else { toast('No available item matches "' + code + '"', true); }
+        scanInput.value = '';
+      });
 
       var submit = document.createElement('div'); submit.className = 'form-actions';
       submit.innerHTML = '<button type="button" class="btn btn-secondary" id="cancel">Cancel</button><button class="btn btn-primary">Create delivery</button>';
@@ -629,15 +809,30 @@ function viewInstallations() {
       ]);
       while (f.form.firstChild) wrap.appendChild(f.form.firstChild);
 
+      var scanField = document.createElement('div'); scanField.className = 'field';
+      scanField.innerHTML = '<label>Scan to select</label><input type="text" placeholder="Scan a serial number to check it off">';
+      wrap.appendChild(scanField);
+
       var pickerLabel = document.createElement('label'); pickerLabel.textContent = 'Items to install'; pickerLabel.style.cssText = 'font-size:12.5px;font-weight:600;color:var(--ink-muted);display:block;margin:4px 0 6px;';
       var picker = document.createElement('div'); picker.className = 'item-picker';
       if (!pending.length) picker.innerHTML = '<p style="color:var(--ink-muted);font-size:13px;">No items awaiting installation.</p>';
+      var checkboxBySerial = {};
       pending.forEach(function (it) {
         var lbl = document.createElement('label');
         lbl.innerHTML = '<input type="checkbox" value="' + it.ItemID + '"> <span class="mono">' + it.SerialNumber + '</span> — ' + it.Status;
         picker.appendChild(lbl);
+        checkboxBySerial[it.SerialNumber] = lbl.querySelector('input');
       });
       wrap.appendChild(pickerLabel); wrap.appendChild(picker);
+
+      var scanInput = scanField.querySelector('input');
+      scanInput.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' || !scanInput.value.trim()) return;
+        var code = scanInput.value.trim();
+        var cb = checkboxBySerial[code] || (pending.find(function (it) { return it.Barcode === code; }) && checkboxBySerial[(pending.find(function (it) { return it.Barcode === code; })).SerialNumber]);
+        if (cb) { cb.checked = true; toast('Checked off ' + code); } else { toast('No pending item matches "' + code + '"', true); }
+        scanInput.value = '';
+      });
 
       var submit = document.createElement('div'); submit.className = 'form-actions';
       submit.innerHTML = '<button type="button" class="btn btn-secondary" id="cancel">Cancel</button><button class="btn btn-primary">Create installation</button>';

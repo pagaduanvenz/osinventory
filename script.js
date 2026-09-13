@@ -203,6 +203,7 @@ var VIEWS = {
   installations: viewInstallations,
   clients: viewMasterData.bind(null, 'Clients', 'ClientID', clientFields()),
   suppliers: viewMasterData.bind(null, 'Suppliers', 'SupplierID', supplierFields()),
+  'stock-monitor': viewStockMonitor,
   reports: viewReports,
   users: viewUsers,
   settings: viewSettings,
@@ -913,6 +914,100 @@ function viewMasterData(entity, idField, fields) {
       withLoading(op).then(function () { closeModal(); toast('Saved'); navigate(entity.toLowerCase()); }).catch(function (e) { toast(e.message, true); });
     });
     openModal(existing ? 'Edit' : 'Add', f.form);
+  }
+}
+
+// ---------------- Stock Monitor (live per-model counts) ----------------
+function viewStockMonitor() {
+  head('Stock Monitor', 'Filter by model to see how many are left and where every unit stands.');
+
+  var filterBar = document.createElement('div'); filterBar.className = 'filter-bar';
+  filterBar.innerHTML =
+    '<input type="text" id="sm-model-input" list="sm-models" placeholder="Type or pick a model — e.g. A100">' +
+    '<datalist id="sm-models"></datalist>' +
+    '<button class="btn btn-secondary btn-sm" id="sm-refresh">Refresh</button>';
+  root.appendChild(filterBar);
+
+  var host = document.createElement('div'); root.appendChild(host);
+  host.innerHTML = '<div class="empty-state"><strong>Pick a model</strong>Choose a model above to see live stock counts and movement.</div>';
+
+  var models = [], items = [], movements = [];
+  load();
+
+  filterBar.querySelector('#sm-refresh').addEventListener('click', load);
+  var input = filterBar.querySelector('#sm-model-input');
+  input.addEventListener('input', function () { draw(input.value.trim()); });
+
+  function load() {
+    withLoading(Promise.all([api.list('Models'), api.list('Items'), api.list('StockMovements')])).then(function (res) {
+      models = res[0]; items = res[1]; movements = res[2];
+      var datalist = filterBar.querySelector('#sm-models');
+      datalist.innerHTML = models.map(function (m) { return '<option value="' + m.ModelName + '">'; }).join('');
+      if (input.value.trim()) draw(input.value.trim());
+    }).catch(function (e) { toast(e.message, true); });
+  }
+
+  function draw(query) {
+    var model = models.find(function (m) {
+      return m.ModelName.toLowerCase() === query.toLowerCase() || m.ModelID.toLowerCase() === query.toLowerCase() || m.Barcode === query;
+    });
+    if (!model) {
+      host.innerHTML = query
+        ? '<div class="empty-state"><strong>No exact match</strong>Keep typing, or pick a suggestion from the list.</div>'
+        : '<div class="empty-state"><strong>Pick a model</strong>Choose a model above to see live stock counts and movement.</div>';
+      return;
+    }
+
+    var modelItems = items.filter(function (it) { return it.ModelID === model.ModelID; });
+    var counts = {};
+    modelItems.forEach(function (it) { counts[it.Status] = (counts[it.Status] || 0) + 1; });
+    var available = counts['Available'] || 0;
+    var minStock = Number(model.MinStock || 0);
+    var lowStock = available <= minStock;
+
+    var itemIds = {};
+    modelItems.forEach(function (it) { itemIds[it.ItemID] = true; });
+    var modelMoves = movements.filter(function (m) { return itemIds[m.ItemID]; })
+      .sort(function (a, b) { return new Date(b.DateTime) - new Date(a.DateTime); }).slice(0, 25);
+
+    host.innerHTML = '';
+
+    var infoPanel = document.createElement('div'); infoPanel.className = 'panel';
+    infoPanel.innerHTML =
+      '<h2>' + model.ModelName + '</h2>' +
+      '<p style="color:var(--ink-muted);font-size:13.5px;margin-bottom:14px;">' +
+      (model.Brand ? model.Brand + ' · ' : '') + (model.Category || '') + ' · Barcode: <span class="mono">' + model.Barcode + '</span> · Min stock: ' + minStock +
+      '</p>' +
+      (lowStock ? '<div class="loading-banner" style="background:var(--rust);color:#fff;">Low stock — only ' + available + ' available, at or below the minimum of ' + minStock + '</div>' : '');
+    host.appendChild(infoPanel);
+
+    var order = ['Available', 'Reserved', 'Out for Delivery', 'Delivered', 'For Installation', 'Installed', 'Returned', 'For Repair', 'Damaged', 'Lost', 'Disposed'];
+    var grid = document.createElement('div'); grid.className = 'stat-grid';
+    var cards = [{ n: modelItems.length, l: 'Total units' }];
+    order.forEach(function (s) { if (counts[s]) cards.push({ n: counts[s], l: s }); });
+    grid.innerHTML = cards.map(function (c) {
+      return '<div class="stat-card"><div class="n">' + c.n + '</div><div class="l">' + c.l + '</div></div>';
+    }).join('');
+    host.appendChild(grid);
+
+    var panelsWrap = document.createElement('div'); panelsWrap.style.display = 'grid'; panelsWrap.style.gridTemplateColumns = '1fr 1fr'; panelsWrap.style.gap = '20px';
+    var itemsPanel = document.createElement('div'); itemsPanel.className = 'panel'; itemsPanel.innerHTML = '<h2>Units</h2><div id="sm-items"></div>';
+    var movesPanel = document.createElement('div'); movesPanel.className = 'panel'; movesPanel.innerHTML = '<h2>Recent movement</h2><div id="sm-moves"></div>';
+    panelsWrap.appendChild(itemsPanel); panelsWrap.appendChild(movesPanel);
+    host.appendChild(panelsWrap);
+
+    renderTable(itemsPanel.querySelector('#sm-items'), [
+      { key: 'SerialNumber', label: 'Serial', mono: true },
+      { label: 'Status', render: function (r) { return statusBadge(r.Status); } },
+      { key: 'Condition', label: 'Condition' },
+      { key: 'Location', label: 'Location' }
+    ], modelItems);
+
+    renderTable(movesPanel.querySelector('#sm-moves'), [
+      { key: 'SerialNumber', label: 'Serial', mono: true },
+      { label: 'Change', render: function (r) { return statusBadge(r.PrevStatus || '—') + ' → ' + statusBadge(r.NewStatus); } },
+      { key: 'DateTime', label: 'When', render: function (r) { return fmtDate(r.DateTime); } }
+    ], modelMoves);
   }
 }
 

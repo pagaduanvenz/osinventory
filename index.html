@@ -2,11 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#1B1F27" />
 <title>OneSecai Inventory</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
+  <div id="top-progress" class="top-progress" hidden><div class="top-progress-bar"></div></div>
   <div class="app-shell">
     <aside class="sidebar" id="sidebar">
       <div class="brand">
@@ -60,6 +65,14 @@
       <div id="view-root"></div>
     </main>
   </div>
+
+  <nav class="bottom-tabs" id="bottom-tabs">
+    <button class="bottom-tab" data-view="dashboard"><span class="bt-icon">⌂</span><span>Home</span></button>
+    <button class="bottom-tab" data-view="items"><span class="bt-icon">▤</span><span>Items</span></button>
+    <button class="bottom-tab" data-view="scan"><span class="bt-icon">◎</span><span>Scan</span></button>
+    <button class="bottom-tab" data-view="bulk"><span class="bt-icon">≡+</span><span>Bulk</span></button>
+    <button class="bottom-tab" id="bottom-tab-menu"><span class="bt-icon">☰</span><span>Menu</span></button>
+  </nav>
 
   <div class="modal-overlay" id="modal-overlay" hidden>
     <div class="modal" id="modal">
